@@ -2,20 +2,30 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'react-toastify'
 import { format, isToday, isPast, parseISO } from 'date-fns'
+import { useSelector } from 'react-redux'
 import ApperIcon from './ApperIcon'
+import TaskService from '../services/TaskService'
+import CategoryService from '../services/CategoryService'
 
 const MainFeature = () => {
+  // Authentication state
+  const { user, isAuthenticated } = useSelector((state) => state.user)
+  
+  // Loading states
+  const [isTasksLoading, setIsTasksLoading] = useState(false)
+  const [isCategoriesLoading, setIsCategoriesLoading] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
+  const [isUpdating, setIsUpdating] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  
+  // Data states
   const [tasks, setTasks] = useState([])
-  const [categories, setCategories] = useState([
-    { id: '1', name: 'Personal', color: '#3b82f6', taskCount: 0 },
-    { id: '2', name: 'Work', color: '#8b5cf6', taskCount: 0 },
-    { id: '3', name: 'Shopping', color: '#10b981', taskCount: 0 },
-    { id: '4', name: 'Health', color: '#f59e0b', taskCount: 0 }
-  ])
+  const [categories, setCategories] = useState([])
   const [showAddTask, setShowAddTask] = useState(false)
   const [filter, setFilter] = useState('all')
   const [selectedCategory, setSelectedCategory] = useState('')
   const [editingTask, setEditingTask] = useState(null)
+
   
   const [taskForm, setTaskForm] = useState({
     title: '',
@@ -25,86 +35,256 @@ const MainFeature = () => {
     categoryId: ''
   })
 
-  // Load tasks from localStorage on component mount
+  // Load tasks and categories from database on component mount
   useEffect(() => {
-    const savedTasks = localStorage.getItem('taskflow-tasks')
-    if (savedTasks) {
-      setTasks(JSON.parse(savedTasks))
+    if (isAuthenticated) {
+      loadTasks()
+      loadCategories()
     }
-  }, [])
+  }, [isAuthenticated])
 
-  // Save tasks to localStorage whenever tasks change
+  // Load tasks from database
+  const loadTasks = async () => {
+    try {
+      setIsTasksLoading(true)
+      const response = await TaskService.fetchTasks()
+      
+      // Transform database data to UI format
+      const transformedTasks = response.data.map(task => ({
+        id: task.Id?.toString() || task.id?.toString(),
+        title: task.title || task.Name || '',
+        description: task.description || '',
+        dueDate: task.due_date || '',
+        priority: task.priority || 'medium',
+        categoryId: task.category || '',
+        isCompleted: task.is_completed ? task.is_completed.includes('completed') : false,
+        createdAt: task.created_at || task.CreatedOn || new Date().toISOString(),
+        updatedAt: task.updated_at || task.ModifiedOn || new Date().toISOString(),
+        tags: task.Tags || '',
+        owner: task.Owner || ''
+      }))
+      
+      setTasks(transformedTasks)
+    } catch (error) {
+      console.error('Failed to load tasks:', error)
+      toast.error('Failed to load tasks. Please try again.')
+      setTasks([])
+    } finally {
+      setIsTasksLoading(false)
+    }
+  }
+
+  // Load categories from database
+  const loadCategories = async () => {
+    try {
+      setIsCategoriesLoading(true)
+      const response = await CategoryService.fetchCategories()
+      
+      // Transform database data to UI format
+      const transformedCategories = response.data.map(category => ({
+        id: category.Id?.toString() || category.id?.toString(),
+        name: category.Name || '',
+        color: category.color || '#6366f1',
+        taskCount: 0 // Will be calculated below
+      }))
+      
+      setCategories(transformedCategories)
+    } catch (error) {
+      console.error('Failed to load categories:', error)
+      toast.error('Failed to load categories. Using default categories.')
+      // Set default categories if database load fails
+      setCategories([
+        { id: 'default-1', name: 'Personal', color: '#3b82f6', taskCount: 0 },
+        { id: 'default-2', name: 'Work', color: '#8b5cf6', taskCount: 0 },
+        { id: 'default-3', name: 'Shopping', color: '#10b981', taskCount: 0 },
+        { id: 'default-4', name: 'Health', color: '#f59e0b', taskCount: 0 }
+      ])
+    } finally {
+      setIsCategoriesLoading(false)
+    }
+  }
+
+  // Update category task counts whenever tasks change
   useEffect(() => {
-    localStorage.setItem('taskflow-tasks', JSON.stringify(tasks))
     updateCategoryTaskCounts()
-  }, [tasks])
+  }, [tasks, categories])
 
   const updateCategoryTaskCounts = () => {
     const updatedCategories = categories.map(category => ({
       ...category,
       taskCount: tasks.filter(task => task.categoryId === category.id && !task.isCompleted).length
     }))
-    setCategories(updatedCategories)
+    if (JSON.stringify(updatedCategories) !== JSON.stringify(categories)) {
+      setCategories(updatedCategories)
+    }
   }
 
-  const handleAddTask = (e) => {
+
+  const handleAddTask = async (e) => {
     e.preventDefault()
     if (!taskForm.title.trim()) {
       toast.error('Please enter a task title')
       return
     }
 
-    const newTask = {
-      id: Date.now().toString(),
-      ...taskForm,
-      isCompleted: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }
+    try {
+      setIsCreating(true)
+      
+      // Transform UI data to database format
+      const taskData = {
+        Name: taskForm.title,
+        title: taskForm.title,
+        description: taskForm.description,
+        due_date: taskForm.dueDate,
+        priority: taskForm.priority,
+        category: taskForm.categoryId,
+        is_completed: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        Tags: '',
+        Owner: user?.emailAddress || ''
+      }
 
-    setTasks([...tasks, newTask])
-    setTaskForm({ title: '', description: '', dueDate: '', priority: 'medium', categoryId: '' })
-    setShowAddTask(false)
-    toast.success('Task created successfully!')
+      const createdTasks = await TaskService.createTasks(taskData)
+      
+      if (createdTasks && createdTasks.length > 0) {
+        // Transform created task back to UI format
+        const newTask = {
+          id: createdTasks[0].Id?.toString(),
+          title: createdTasks[0].title || createdTasks[0].Name,
+          description: createdTasks[0].description || '',
+          dueDate: createdTasks[0].due_date || '',
+          priority: createdTasks[0].priority || 'medium',
+          categoryId: createdTasks[0].category || '',
+          isCompleted: false,
+          createdAt: createdTasks[0].created_at || createdTasks[0].CreatedOn,
+          updatedAt: createdTasks[0].updated_at || createdTasks[0].ModifiedOn,
+          tags: createdTasks[0].Tags || '',
+          owner: createdTasks[0].Owner || ''
+        }
+
+        setTasks([newTask, ...tasks])
+        setTaskForm({ title: '', description: '', dueDate: '', priority: 'medium', categoryId: '' })
+        setShowAddTask(false)
+        toast.success('Task created successfully!')
+      }
+    } catch (error) {
+      console.error('Failed to create task:', error)
+      toast.error('Failed to create task. Please try again.')
+    } finally {
+      setIsCreating(false)
+    }
   }
 
-  const handleEditTask = (e) => {
+
+  const handleEditTask = async (e) => {
     e.preventDefault()
     if (!taskForm.title.trim()) {
       toast.error('Please enter a task title')
       return
     }
 
-    const updatedTasks = tasks.map(task =>
-      task.id === editingTask.id
-        ? { ...task, ...taskForm, updatedAt: new Date().toISOString() }
-        : task
-    )
+    try {
+      setIsUpdating(true)
+      
+      // Transform UI data to database format
+      const taskData = {
+        Id: editingTask.id,
+        Name: taskForm.title,
+        title: taskForm.title,
+        description: taskForm.description,
+        due_date: taskForm.dueDate,
+        priority: taskForm.priority,
+        category: taskForm.categoryId,
+        updated_at: new Date().toISOString()
+      }
 
-    setTasks(updatedTasks)
-    setEditingTask(null)
-    setTaskForm({ title: '', description: '', dueDate: '', priority: 'medium', categoryId: '' })
-    toast.success('Task updated successfully!')
-  }
+      const updatedTasks = await TaskService.updateTasks(taskData)
+      
+      if (updatedTasks && updatedTasks.length > 0) {
+        // Update local state with the updated task
+        const updatedTasksState = tasks.map(task =>
+          task.id === editingTask.id
+            ? {
+                ...task,
+                title: updatedTasks[0].title || updatedTasks[0].Name,
+                description: updatedTasks[0].description || '',
+                dueDate: updatedTasks[0].due_date || '',
+                priority: updatedTasks[0].priority || 'medium',
+                categoryId: updatedTasks[0].category || '',
+                updatedAt: updatedTasks[0].updated_at || updatedTasks[0].ModifiedOn
+              }
+            : task
+        )
 
-  const toggleTaskCompletion = (taskId) => {
-    const updatedTasks = tasks.map(task =>
-      task.id === taskId
-        ? { ...task, isCompleted: !task.isCompleted, updatedAt: new Date().toISOString() }
-        : task
-    )
-    setTasks(updatedTasks)
-    
-    const task = tasks.find(t => t.id === taskId)
-    if (task && !task.isCompleted) {
-      toast.success('Task completed! 🎉')
+        setTasks(updatedTasksState)
+        setEditingTask(null)
+        setTaskForm({ title: '', description: '', dueDate: '', priority: 'medium', categoryId: '' })
+        setShowAddTask(false)
+        toast.success('Task updated successfully!')
+      }
+    } catch (error) {
+      console.error('Failed to update task:', error)
+      toast.error('Failed to update task. Please try again.')
+    } finally {
+      setIsUpdating(false)
     }
   }
 
-  const deleteTask = (taskId) => {
-    setTasks(tasks.filter(task => task.id !== taskId))
-    toast.success('Task deleted successfully')
+
+  const toggleTaskCompletion = async (taskId) => {
+    try {
+      const task = tasks.find(t => t.id === taskId)
+      if (!task) return
+
+      const updatedCompletionStatus = !task.isCompleted
+      
+      // Transform UI data to database format
+      const taskData = {
+        Id: taskId,
+        is_completed: updatedCompletionStatus ? 'completed' : '',
+        updated_at: new Date().toISOString()
+      }
+
+      await TaskService.updateTasks(taskData)
+      
+      // Update local state immediately for better UX
+      const updatedTasks = tasks.map(t =>
+        t.id === taskId
+          ? { ...t, isCompleted: updatedCompletionStatus, updatedAt: new Date().toISOString() }
+          : t
+      )
+      setTasks(updatedTasks)
+      
+      if (updatedCompletionStatus) {
+        toast.success('Task completed! 🎉')
+      } else {
+        toast.success('Task marked as pending')
+      }
+    } catch (error) {
+      console.error('Failed to toggle task completion:', error)
+      toast.error('Failed to update task status. Please try again.')
+    }
   }
+
+
+  const deleteTask = async (taskId) => {
+    try {
+      setIsDeleting(true)
+      
+      await TaskService.deleteTasks(taskId)
+      
+      // Remove from local state
+      setTasks(tasks.filter(task => task.id !== taskId))
+      toast.success('Task deleted successfully')
+    } catch (error) {
+      console.error('Failed to delete task:', error)
+      toast.error('Failed to delete task. Please try again.')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
 
   const startEditTask = (task) => {
     setEditingTask(task)
@@ -389,10 +569,24 @@ const MainFeature = () => {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-                <button type="submit" className="btn-primary">
-                  <ApperIcon name={editingTask ? "Save" : "Plus"} className="w-4 h-4 mr-2" />
-                  {editingTask ? 'Update Task' : 'Create Task'}
+                <button 
+                  type="submit" 
+                  className="btn-primary flex items-center justify-center"
+                  disabled={isCreating || isUpdating}
+                >
+                  {isCreating || isUpdating ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                      {editingTask ? 'Updating...' : 'Creating...'}
+                    </>
+                  ) : (
+                    <>
+                      <ApperIcon name={editingTask ? "Save" : "Plus"} className="w-4 h-4 mr-2" />
+                      {editingTask ? 'Update Task' : 'Create Task'}
+                    </>
+                  )}
                 </button>
+
                 <button
                   type="button"
                   onClick={cancelEdit}
